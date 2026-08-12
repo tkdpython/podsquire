@@ -1,0 +1,103 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "SemVer tag to publish, e.g. v1.2.3. Defaults to the current ref if it is a tag."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build release distributions
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[test,build]'
+
+      - name: Validate semver tag matches package version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref_name="${{ inputs.tag || github.ref_name }}"
+          if [[ ! "$ref_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release ref must be a SemVer tag like v1.2.3 or v1.2.3-rc.1; got '$ref_name'" >&2
+            exit 1
+          fi
+          package_version="$(tr -d '[:space:]' < VERSION)"
+          tag_version="${ref_name#v}"
+          if [[ "$package_version" != "$tag_version" ]]; then
+            echo "VERSION ($package_version) must match tag version ($tag_version)" >&2
+            exit 1
+          fi
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+          echo "tag=$ref_name" >> "$GITHUB_OUTPUT"
+
+      - name: Compile package
+        run: python -m compileall podsquire
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Validate distributions
+        run: python -m twine check dist/*
+
+      - name: Upload distributions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: podsquire-${{ steps.version.outputs.version }}-dist
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish distributions to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/podsquire
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download distributions artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: podsquire-${{ needs.build.outputs.version }}-dist
+          path: dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

@@ -342,6 +342,42 @@ export PODSQUIRE_CHECKS_JSON='[{"name":"vault","url":"http://127.0.0.1:8200/v1/s
 
 It also demonstrates reloading the JSON secrets file on `SIGUSR1`.
 
+
+## Release and PyPI publishing
+
+Publishing is automated from GitHub Actions when a SemVer git tag or GitHub
+release is created. The package version is sourced from `VERSION`, and the
+workflow refuses to publish unless the tag version matches that file.
+
+Release checklist:
+
+```bash
+# 1. Update VERSION, for example:
+printf '0.1.1\n' > VERSION
+
+# 2. Run local checks:
+python -m compileall podsquire
+python -m pytest -q
+python -m build
+python -m twine check dist/*
+
+# 3. Commit and tag:
+git add VERSION
+git commit -m "Release v0.1.1"
+git tag -a v0.1.1 -m "Release v0.1.1"
+git push origin main --tags
+```
+
+The `Publish to PyPI` workflow uses PyPI Trusted Publishing/OIDC, so no PyPI API
+token is required in GitHub secrets. Configure the PyPI project publisher for:
+
+- owner/repository: `tkdpython/podsquire`
+- workflow file: `.github/workflows/publish.yml`
+- environment: `pypi`
+
+The CI workflow builds and validates distributions on pushes, pull requests, and
+manual dispatches, but it does not publish.
+
 ## Development checks
 
 From the package directory:
