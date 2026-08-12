@@ -278,6 +278,24 @@ Supported output modes:
 |------|-----------|----------|
 | `env` | Inject secrets into podsquire's environment before the subprocess starts/restarts | Apps that read config from env at startup |
 | `json_file` | Write secrets atomically to a JSON file | Apps that can reload config without restart |
+| `env_file` | Write shell-sourceable `export KEY=value` commands atomically | CI wrappers that need to `source` Vault-backed variables |
+
+For shell env-file mode:
+
+```yaml
+vault_secrets:
+  kv_path: apps/my-service/config
+  output_mode: env_file
+  env_file_path: /tmp/env.sh
+```
+
+You can also use env-file mode directly from the CLI for compatibility with
+legacy CI wrappers:
+
+```bash
+podsquire --write-env-to-file /tmp/env.sh
+source /tmp/env.sh
+```
 
 For JSON-file mode:
 
@@ -299,10 +317,12 @@ Environment fallback variables:
 | `kv_mount_point` | `VAULT_KV_MOUNT_POINT` | unset |
 | `kv_version` | `VAULT_KV_VERSION` | `1` |
 | `json_file_path` | `VAULT_JSON_FILE_PATH` | required for `json_file` mode |
+| `env_file_path` | `VAULT_ENV_FILE_PATH` | required for `env_file` mode |
 
 Secret values are never logged. In `env` mode, all keys returned by Vault are
-placed into `os.environ` for the subprocess to inherit. Keys containing
-`ToBase64` are base64-encoded for compatibility with legacy env conventions.
+placed into `os.environ` for the subprocess to inherit. In `env_file` mode, values
+are safely shell-quoted before being written. Keys containing `ToBase64` are
+base64-encoded for compatibility with legacy env conventions.
 
 ## Deployment patterns
 

@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from podsquire.__main__ import _load_config, _load_vault_config
-from podsquire.vault_secrets import VaultOutputMode
+from podsquire.vault_secrets import VaultOutputMode, VaultSecretsConfig, VaultSecretsClient
 
 
 def write_config(tmp_path: Path, data: dict) -> Path:
@@ -222,3 +222,46 @@ def test_vault_config_uses_public_safe_defaults(monkeypatch: pytest.MonkeyPatch)
     assert cfg.url == "http://127.0.0.1:8200"
     assert cfg.role == "podsquire"
     assert cfg.output_mode == VaultOutputMode.ENV
+
+
+def test_vault_config_supports_env_file_output(tmp_path: Path) -> None:
+    env_file = tmp_path / "vault.env"
+
+    cfg = _load_vault_config(
+        {
+            "kv_path": "apps/example",
+            "output_mode": "env_file",
+            "env_file_path": str(env_file),
+        }
+    )
+
+    assert cfg is not None
+    assert cfg.output_mode == VaultOutputMode.ENV_FILE
+    assert cfg.env_file_path == str(env_file)
+
+
+def test_vault_env_file_output_is_shell_sourceable(tmp_path: Path) -> None:
+    env_file = tmp_path / "env.sh"
+    client = VaultSecretsClient(
+        VaultSecretsConfig(
+            kv_path="apps/example",
+            output_mode=VaultOutputMode.ENV_FILE,
+            env_file_path=str(env_file),
+        )
+    )
+
+    count = client._apply_to_env_file(  # noqa: SLF001 - output formatting regression test
+        {
+            "PLAIN": "hello",
+            "WITH_SPACE": "hello world",
+            "WITH_QUOTE": "it isn't plain",
+            "CERTToBase64": "line1\nline2",
+        }
+    )
+
+    assert count == 4
+    content = env_file.read_text(encoding="utf-8")
+    assert "export PLAIN=hello" in content
+    assert "export WITH_SPACE='hello world'" in content
+    assert "WITH_QUOTE=" in content
+    assert "export CERTToBase64=bGluZTEKbGluZTI=" in content

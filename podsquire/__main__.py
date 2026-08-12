@@ -134,6 +134,10 @@ def _load_vault_config(raw: dict) -> VaultSecretsConfig | None:
     if output_mode == VaultOutputMode.JSON_FILE and not json_file_path:
         raise ValueError("vault_secrets.json_file_path is required when output_mode is 'json_file'")
 
+    env_file_path = raw.get("env_file_path") or os.environ.get("VAULT_ENV_FILE_PATH")
+    if output_mode == VaultOutputMode.ENV_FILE and not env_file_path:
+        raise ValueError("vault_secrets.env_file_path is required when output_mode is 'env_file'")
+
     kv_path = raw.get("kv_path") or os.environ.get("VAULT_KV_PATH")
     if not kv_path:
         log.warning(
@@ -151,6 +155,7 @@ def _load_vault_config(raw: dict) -> VaultSecretsConfig | None:
         refresh_interval_minutes=int(raw.get("refresh_interval_minutes", 0)),
         output_mode=output_mode,
         json_file_path=json_file_path,
+        env_file_path=env_file_path,
         reload_signal=reload_signal,
     )
 
@@ -557,9 +562,20 @@ Examples:
 
   # Fetch SPIFFE certs to a directory and exit (useful as an init container)
   podsquire --pull-certs-only /var/run/secrets/tls
+
+  # Fetch Vault secrets and write shell exports for source-compatible CI wrappers
+  podsquire --write-env-to-file /tmp/env.sh
 """,
     )
     parser.add_argument("-c", "--config", help="Path to podsquire YAML config file")
+    parser.add_argument(
+        "--write-env-to-file",
+        metavar="PATH",
+        help=(
+            "Fetch Vault KV secrets using VAULT_* environment variables, write shell-sourceable "
+            "export commands to PATH, then exit. This is compatible with legacy /vault_env wrappers."
+        ),
+    )
     parser.add_argument(
         "--pull-certs-only",
         metavar="PATH",
@@ -578,6 +594,16 @@ Examples:
     )
     logging.Formatter.converter = time.gmtime  # UTC timestamps
 
+    if args.write_env_to_file:
+        cfg = _build_vault_config_from_env(VaultOutputMode.ENV_FILE, args.write_env_to_file)
+        if cfg is None:
+            log.error("--write-env-to-file requires VAULT_KV_PATH to be set")
+            sys.exit(1)
+        log.info(f"--write-env-to-file: writing Vault secrets as shell exports to {args.write_env_to_file}")
+        count = _fetch_vault_secrets_once(cfg)
+        log.info(f"Vault env exports written — {count} variable(s); exiting")
+        return
+
     if args.pull_certs_only:
         dest = Path(args.pull_certs_only)
         spire = SpireConfig(
@@ -592,7 +618,7 @@ Examples:
         return
 
     if not args.config:
-        parser.error("--config is required (or use --pull-certs-only)")
+        parser.error("--config is required (or use --pull-certs-only or --write-env-to-file)")
 
     config = _load_config(args.config)
 
