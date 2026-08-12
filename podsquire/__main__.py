@@ -34,7 +34,10 @@ import signal
 import ssl
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import yaml
 
@@ -152,21 +155,27 @@ def _load_vault_config(raw: dict) -> VaultSecretsConfig | None:
     )
 
 
-def _load_proxy_presets(config: dict, enabled_names: list[str]) -> list[dict]:
-    """Load named proxy definitions from user-supplied config presets.
-
-    ``proxy_presets`` is deliberately supplied by the caller instead of bundled
-    with the package so podsquire stays environment-neutral and publishable.
-    Unknown names raise a ValueError with the available preset names.
-    """
-    raw_presets = config.get("proxy_presets", {}) or {}
+def _normalise_proxy_presets(raw_presets: object, source: str) -> dict[str, dict]:
+    """Normalise a mapping/list of proxy presets into ``name -> proxy``."""
+    if raw_presets is None:
+        return {}
+    if isinstance(raw_presets, dict):
+        # Accept either {name: proxy}, {"proxies": [...]}, or {"proxy_presets": {...}}.
+        if "proxy_presets" in raw_presets:
+            return _normalise_proxy_presets(raw_presets["proxy_presets"], source)
+        if "proxies" in raw_presets:
+            return _normalise_proxy_presets(raw_presets["proxies"], source)
+        if "name" in raw_presets and "remote_host" in raw_presets:
+            return {str(raw_presets["name"]): dict(raw_presets)}
+        return {str(name): {"name": str(name), **svc} for name, svc in raw_presets.items() if isinstance(svc, dict)}
     if isinstance(raw_presets, list):
-        available = {svc["name"]: svc for svc in raw_presets}
-    elif isinstance(raw_presets, dict):
-        available = {name: {"name": name, **svc} for name, svc in raw_presets.items()}
-    else:
-        raise ValueError("proxy_presets must be a mapping or list of proxy definitions")
+        return {str(svc["name"]): dict(svc) for svc in raw_presets if isinstance(svc, dict) and "name" in svc}
+    raise ValueError(f"Proxy preset source {source!r} must be a mapping or list of proxy definitions")
 
+
+def _load_proxy_presets(config: dict, enabled_names: list[str]) -> list[dict]:
+    """Load named proxy definitions from user-supplied inline config presets."""
+    available = _normalise_proxy_presets(config.get("proxy_presets", {}) or {}, "proxy_presets")
     unknown = [name for name in enabled_names if name not in available]
     if unknown:
         raise ValueError(f"Unknown enabled_proxy_presets: {unknown}. Available: {sorted(available)}")
@@ -174,22 +183,175 @@ def _load_proxy_presets(config: dict, enabled_names: list[str]) -> list[dict]:
     log.info("Proxy presets enabled: %s", [svc["name"] for svc in selected])
     return selected
 
+
+def _is_url(path: str) -> bool:
+    return urlparse(path).scheme in {"http", "https"}
+
+
+def _read_text_with_retries(location: str, retries: int, retry_interval: float, timeout: float) -> str:
+    """Read local or HTTP(S) text, retrying transient failures."""
+    last_exc: Exception | None = None
+    attempts = max(1, retries + 1)
+    for attempt in range(1, attempts + 1):
+        try:
+            if _is_url(location):
+                with urllib.request.urlopen(location, timeout=timeout) as response:  # nosec B310 - user-configured preset URL
+                    return response.read().decode("utf-8")
+            return Path(location).read_text(encoding="utf-8")
+        except (OSError, urllib.error.URLError, TimeoutError) as exc:
+            last_exc = exc
+            if attempt < attempts:
+                log.warning(
+                    "Platform service directory: failed to load %s on attempt %s/%s: %s; retrying in %.1fs",
+                    location,
+                    attempt,
+                    attempts,
+                    exc,
+                    retry_interval,
+                )
+                time.sleep(retry_interval)
+    assert last_exc is not None
+    raise last_exc
+
+
+def _candidate_service_locations(base: str, service_name: str) -> list[str]:
+    if _is_url(base):
+        directory = base if base.endswith("/") else f"{base}/"
+        return [urljoin(directory, f"{service_name}.yml"), urljoin(directory, f"{service_name}.yaml")]
+    base_path = Path(base)
+    return [str(base_path / f"{service_name}.yml"), str(base_path / f"{service_name}.yaml")]
+
+
+def _load_platform_service_file(location: str, settings: dict) -> dict:
+    raw_text = _read_text_with_retries(
+        location,
+        retries=int(settings.get("retries", 3)),
+        retry_interval=float(settings.get("retry_interval", 2)),
+        timeout=float(settings.get("timeout", 10)),
+    )
+    parsed = yaml.safe_load(raw_text) or {}
+    if isinstance(parsed, dict) and "remote_host" in parsed:
+        return dict(parsed)
+    presets = _normalise_proxy_presets(parsed, location)
+    if len(presets) == 1:
+        return next(iter(presets.values()))
+    raise ValueError(f"Platform service file {location!r} must contain exactly one proxy definition")
+
+
+def _load_platform_catalogue(location: str, settings: dict) -> dict[str, dict]:
+    raw_text = _read_text_with_retries(
+        location,
+        retries=int(settings.get("retries", 3)),
+        retry_interval=float(settings.get("retry_interval", 2)),
+        timeout=float(settings.get("timeout", 10)),
+    )
+    return _normalise_proxy_presets(yaml.safe_load(raw_text) or {}, location)
+
+
+def _looks_like_catalogue_path(path: str) -> bool:
+    parsed = urlparse(path)
+    candidate = parsed.path if parsed.scheme else path
+    return candidate.endswith((".yml", ".yaml"))
+
+
+def _load_platform_service_presets(config: dict, enabled_names: list[str]) -> list[dict]:
+    """Load shared platform service proxy presets from a local path or HTTP(S) URL.
+
+    The path comes from ``platform_services.path`` or the
+    ``PODSQUIRE_PLATFORM_SERVICES_PATH`` environment variable. By default,
+    failures are warned and skipped so podsquire can still start with reduced
+    functionality. Set ``fail_on_load_error`` or ``fail_on_missing`` to true to
+    turn those warnings into startup failures.
+    """
+    settings = dict(config.get("platform_services", {}) or {})
+    base = settings.get("path") or os.environ.get("PODSQUIRE_PLATFORM_SERVICES_PATH")
+    if not base:
+        message = (
+            "enabled_platform_services configured but no platform service directory path was provided; "
+            "set platform_services.path or PODSQUIRE_PLATFORM_SERVICES_PATH"
+        )
+        if settings.get("fail_on_load_error", False):
+            raise RuntimeError(message)
+        log.warning("Platform service directory: %s", message)
+        log.warning("Platform service directory: services not loaded: %s", enabled_names)
+        return []
+
+    fail_on_load_error = bool(settings.get("fail_on_load_error", False))
+    fail_on_missing = bool(settings.get("fail_on_missing", False))
+    selected: list[dict] = []
+    missing: list[str] = []
+
+    if _looks_like_catalogue_path(str(base)):
+        try:
+            available = _load_platform_catalogue(str(base), settings)
+        except Exception as exc:
+            if fail_on_load_error:
+                raise RuntimeError(f"Platform service directory failed to load {base!r}: {exc}") from exc
+            log.warning("Platform service directory: failed to load %s: %s", base, exc)
+            log.warning("Platform service directory: services not loaded: %s", enabled_names)
+            return []
+        for name in enabled_names:
+            if name in available:
+                selected.append(available[name])
+            else:
+                missing.append(name)
+    else:
+        for name in enabled_names:
+            loaded = None
+            errors = []
+            for location in _candidate_service_locations(str(base), name):
+                try:
+                    loaded = _load_platform_service_file(location, settings)
+                    loaded.setdefault("name", name)
+                    break
+                except Exception as exc:
+                    errors.append(f"{location}: {exc}")
+            if loaded is not None:
+                selected.append(loaded)
+            else:
+                missing.append(name)
+                log.warning("Platform service directory: service %r could not be loaded from %s", name, base)
+                for error in errors:
+                    log.debug("Platform service directory: %s", error)
+
+    if missing:
+        message = f"Platform service directory: services not loaded: {missing}"
+        if fail_on_missing:
+            raise RuntimeError(message)
+        log.warning(message)
+    if selected:
+        log.info("Platform services enabled: %s", [svc["name"] for svc in selected])
+    return selected
+
+
+def _merge_enabled_proxies(config: dict, source_name: str, proxy_defs: list[dict]) -> None:
+    config.setdefault("proxies", [])
+    existing_names = {p["name"] for p in config["proxies"]}
+    for svc in proxy_defs:
+        if svc["name"] not in existing_names:
+            config["proxies"].append(svc)
+            existing_names.add(svc["name"])
+        else:
+            log.debug("%s: %r overridden by user proxies entry — skipping", source_name, svc["name"])
+
+
 def _load_config(path: str) -> dict:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
 
     # Merge any named proxy presets into the proxies list. User-defined proxies
     # take precedence when a preset and explicit proxy share a name.
     enabled = config.pop("enabled_proxy_presets", None)
     if enabled:
-        preset_proxies = _load_proxy_presets(config, enabled)
-        config.setdefault("proxies", [])
-        existing_names = {p["name"] for p in config["proxies"]}
-        for svc in preset_proxies:
-            if svc["name"] not in existing_names:
-                config["proxies"].append(svc)
-            else:
-                log.debug("enabled_proxy_presets: %r overridden by user proxies entry — skipping", svc["name"])
+        _merge_enabled_proxies(config, "enabled_proxy_presets", _load_proxy_presets(config, enabled))
+
+    enabled_platform = config.pop("enabled_platform_services", None)
+    if enabled_platform:
+        _merge_enabled_proxies(
+            config,
+            "enabled_platform_services",
+            _load_platform_service_presets(config, enabled_platform),
+        )
 
     config.pop("proxy_presets", None)
     return config

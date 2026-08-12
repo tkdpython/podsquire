@@ -25,6 +25,9 @@ container that writes certificates to a shared volume.
 - **User-defined proxy presets** — define your own environment-specific proxy
   shortcuts in configuration; no private service definitions are bundled in the
   package.
+- **Shared platform service directories** — load common proxy presets from a
+  local directory/file or HTTP(S) directory/file at startup, with retries and
+  warn-and-continue defaults.
 
 All features are optional. Enable only the sections your container needs.
 
@@ -72,6 +75,7 @@ are optional, but a long-running process should include at least one of:
 - `subprocess`
 - `proxies`
 - `enabled_proxy_presets`
+- `enabled_platform_services`
 - `vault_secrets`
 
 ### SPIRE certificate management
@@ -146,6 +150,77 @@ When `verify_remote` is `true`, the upstream server certificate is verified
 against the SPIFFE trust bundle written to `ca_path`. Hostname checking is
 disabled because SPIFFE SVIDs normally identify workloads with URI SANs rather
 than DNS SANs.
+
+
+### Shared platform service directories
+
+Use `platform_services` when a platform team publishes common proxy listener
+definitions outside the application repo. The source can be a local directory, a
+local YAML catalogue, an HTTP(S) directory, or an HTTP(S) YAML catalogue. The
+path can be set in config or with `PODSQUIRE_PLATFORM_SERVICES_PATH`.
+
+```yaml
+platform_services:
+  path: /etc/podsquire/platform-services
+  retries: 3
+  retry_interval: 2
+  timeout: 10
+  fail_on_load_error: false
+  fail_on_missing: false
+
+enabled_platform_services:
+  - vault
+  - mongo
+```
+
+Directory mode fetches one YAML file per requested service name:
+
+```text
+/etc/podsquire/platform-services/vault.yml
+/etc/podsquire/platform-services/mongo.yaml
+https://platform.example/podsquire/services/vault.yml
+```
+
+Each per-service file may contain a single proxy definition. The `name` field is
+optional in per-service files and defaults to the requested service name:
+
+```yaml
+mode: http
+local_host: 127.0.0.1
+local_port: 8200
+remote_host: vault.example.svc.cluster.local
+remote_port: 8200
+verify_remote: true
+```
+
+Catalogue mode is selected when the path ends in `.yml` or `.yaml`. The file can
+contain `proxy_presets:`, `proxies:`, or a direct mapping of service name to proxy
+definition:
+
+```yaml
+proxy_presets:
+  vault:
+    mode: http
+    local_host: 127.0.0.1
+    local_port: 8200
+    remote_host: vault.example.svc.cluster.local
+    remote_port: 8200
+    verify_remote: true
+```
+
+Failure behaviour is intentionally non-disruptive by default. If the common
+directory/catalogue cannot be loaded, podsquire logs a warning, logs the service
+names that could not be loaded, and continues startup with any remaining explicit
+`proxies:` entries. To make missing shared services fatal, set:
+
+```yaml
+platform_services:
+  fail_on_load_error: true  # fatal if the source cannot be loaded
+  fail_on_missing: true     # fatal if a requested service name is absent
+```
+
+Explicit `proxies:` entries override shared platform services with the same
+`name`, so application-local emergency overrides remain possible.
 
 ### Proxy presets
 

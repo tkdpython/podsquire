@@ -8,8 +8,9 @@
 #   podsquire --pull-certs-only /var/run/secrets/tls
 #
 # All top-level sections are optional. Enable only what you need.
-# At least one of spire/static, subprocess, proxies, or enabled_proxy_presets
-# must be present for a long-running podsquire process to do useful work.
+# At least one of spire/static, subprocess, proxies, enabled_proxy_presets,
+# enabled_platform_services, or vault_secrets must be present for a long-running
+# podsquire process to do useful work.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -91,6 +92,38 @@ subprocess:
     enabled: true
     max_restarts: 3
     window_seconds: 120
+
+
+# -----------------------------------------------------------------------------
+# Shared platform service directory (optional)
+# -----------------------------------------------------------------------------
+# Use this when a platform team publishes common proxy listener definitions.
+# The path can be a local directory, a local YAML catalogue, an HTTP(S) directory,
+# or an HTTP(S) YAML catalogue. It can also come from:
+#   PODSQUIRE_PLATFORM_SERVICES_PATH
+#
+# Directory mode expects one file per service, for example:
+#   /platform-services/vault.yml
+#   /platform-services/mongo.yaml
+#
+# Catalogue mode expects one YAML file containing proxy_presets: or proxies:.
+# By default, load failures warn and podsquire continues with reduced proxy
+# coverage. Set fail_on_* to true when missing shared services should stop
+# startup.
+platform_services:
+  path: ""  # e.g. /etc/podsquire/platform-services or https://example.com/podsquire/services/
+  retries: 3
+  retry_interval: 2
+  timeout: 10
+  fail_on_load_error: false
+  fail_on_missing: false
+
+# Enable one or more proxy listener definitions from the shared platform service
+# directory/catalogue. Missing names are listed in the console logs. Explicit
+# entries under proxies: with the same name override shared services.
+enabled_platform_services:
+  - vault
+  # - mongo
 
 # -----------------------------------------------------------------------------
 # Optional proxy presets supplied by your own config
