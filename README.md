@@ -346,27 +346,26 @@ It also demonstrates reloading the JSON secrets file on `SIGUSR1`.
 ## Release and PyPI publishing
 
 Publishing is automated from GitHub Actions when a SemVer git tag or GitHub
-release is created. The package version is sourced from `VERSION`, and the
-workflow refuses to publish unless the tag version matches that file.
+release is created. The package version is derived from git tags with
+`setuptools-scm`; there is no committed version file to update.
 
 Release checklist:
 
 ```bash
-# 1. Update VERSION, for example:
-printf '0.1.1\n' > VERSION
-
-# 2. Run local checks:
+# 1. Make sure the release commit is clean and all checks pass:
 python -m compileall podsquire
 python -m pytest -q
 python -m build
 python -m twine check dist/*
 
-# 3. Commit and tag:
-git add VERSION
-git commit -m "Release v0.1.1"
+# 2. Tag the release commit. The tag is the package version source of truth:
 git tag -a v0.1.1 -m "Release v0.1.1"
 git push origin main --tags
 ```
+
+The publish workflow checks out the tag with full git history, derives the
+package version from the tag, and refuses to publish if the derived version does
+not exactly match the SemVer tag without its leading `v`.
 
 The `Publish to PyPI` workflow uses PyPI Trusted Publishing/OIDC, so no PyPI API
 token is required in GitHub secrets. Configure the PyPI project publisher for:

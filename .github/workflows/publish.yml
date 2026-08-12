@@ -31,6 +31,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -41,23 +43,22 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install --upgrade pip && python -m pip install -e '.[test,build]'
 
-      - name: Validate semver tag matches package version
+      - name: Validate semver tag
         id: version
         shell: bash
         run: |
           set -euo pipefail
           ref_name="${{ inputs.tag || github.ref_name }}"
-          if [[ ! "$ref_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+          if [[ ! "$ref_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "Release ref must be a SemVer tag like v1.2.3 or v1.2.3-rc.1; got '$ref_name'" >&2
             exit 1
           fi
-          package_version="$(tr -d '[:space:]' < VERSION)"
+          git fetch --force --tags
+          git checkout --detach "$ref_name"
+          derived_version="$(python -m setuptools_scm)"
           tag_version="${ref_name#v}"
-          if [[ "$package_version" != "$tag_version" ]]; then
-            echo "VERSION ($package_version) must match tag version ($tag_version)" >&2
-            exit 1
-          fi
-          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+          python -c 'import sys; from packaging.version import Version; derived=Version(sys.argv[1]); tagged=Version(sys.argv[2]); raise SystemExit(0 if derived == tagged else f"Git-derived package version ({derived}) must match tag version ({tagged})")' "$derived_version" "$tag_version"
+          echo "version=$derived_version" >> "$GITHUB_OUTPUT"
           echo "tag=$ref_name" >> "$GITHUB_OUTPUT"
 
       - name: Compile package
