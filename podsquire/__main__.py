@@ -119,6 +119,27 @@ def _load_supervisor_config(raw: dict) -> SupervisorConfig:
     )
 
 
+def _build_vault_config_from_env(output_mode: VaultOutputMode, output_path: str | None = None) -> VaultSecretsConfig | None:
+    """Build a Vault secrets config from VAULT_* environment variables.
+
+    This supports source-compatible CI wrappers such as ``/vault_env`` where no
+    podsquire YAML config file is available inside the job container.
+    """
+    raw: dict[str, object] = {"output_mode": output_mode.value}
+    if output_mode == VaultOutputMode.JSON_FILE:
+        raw["json_file_path"] = output_path or os.environ.get("VAULT_JSON_FILE_PATH")
+    if output_mode == VaultOutputMode.ENV_FILE:
+        raw["env_file_path"] = output_path or os.environ.get("VAULT_ENV_FILE_PATH")
+    return _load_vault_config(raw)
+
+
+def _fetch_vault_secrets_once(cfg: VaultSecretsConfig) -> int:
+    """Fetch Vault secrets once and apply them using the configured output mode."""
+    client = VaultSecretsClient(cfg)
+    count, _changed = asyncio.run(client.fetch_and_apply())
+    return count
+
+
 def _load_vault_config(raw: dict) -> VaultSecretsConfig | None:
     reload_signal = None
     sig_name = raw.get("reload_signal")

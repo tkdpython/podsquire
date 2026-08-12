@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from podsquire.__main__ import _load_config, _load_vault_config
+from podsquire.__main__ import _build_vault_config_from_env, _load_config, _load_vault_config
 from podsquire.vault_secrets import VaultOutputMode, VaultSecretsConfig, VaultSecretsClient
 
 
@@ -265,3 +265,23 @@ def test_vault_env_file_output_is_shell_sourceable(tmp_path: Path) -> None:
     assert "export WITH_SPACE='hello world'" in content
     assert "WITH_QUOTE=" in content
     assert "export CERTToBase64=bGluZTEKbGluZTI=" in content
+
+
+def test_build_vault_config_from_env_file_mode(monkeypatch, tmp_path):
+    env_file = tmp_path / "env.sh"
+    monkeypatch.setenv("VAULT_KV_PATH", "platform/ci")
+    monkeypatch.setenv("VAULT_URL", "http://vault.example")
+    monkeypatch.setenv("VAULT_ROLE", "gitlab-runner")
+    monkeypatch.setenv("VAULT_KV_MOUNT_POINT", "secret")
+    monkeypatch.setenv("VAULT_KV_VERSION", "2")
+
+    cfg = _build_vault_config_from_env(VaultOutputMode.ENV_FILE, str(env_file))
+
+    assert cfg is not None
+    assert cfg.kv_path == "platform/ci"
+    assert cfg.url == "http://vault.example"
+    assert cfg.role == "gitlab-runner"
+    assert cfg.kv_mount_point == "secret"
+    assert cfg.kv_version == 2
+    assert cfg.output_mode == VaultOutputMode.ENV_FILE
+    assert cfg.env_file_path == str(env_file)
