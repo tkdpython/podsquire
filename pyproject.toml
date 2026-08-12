@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "podsquire"
+description = "Container init wrapper for SPIFFE cert bootstrap, mTLS proxying, Vault secret injection, and subprocess supervision."
+authors = [
+    { name = "tkdpython" }
+]
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["spiffe", "spire", "mtls", "supervisor", "proxy", "vault", "kubernetes"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: Proxy Servers",
+    "Topic :: Security :: Cryptography",
+    "Topic :: System :: Systems Administration",
+]
+license = "MIT"
+dynamic = ["dependencies", "version"]
+
+[project.scripts]
+podsquire = "podsquire.__main__:main"
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+build = ["build>=1.2", "twine>=5.0"]
+
+[tool.setuptools.packages.find]
+include = ["podsquire", "podsquire.*"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+version = {file = ["VERSION"]}
